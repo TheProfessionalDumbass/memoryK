@@ -203,7 +203,7 @@ jobs:
           mkdir output
           if [ "${{ inputs.build_lkm}}" = "true" ]; then 
             llvm-strip-15 -d $OUTDIR/miprotect.ko
-            mv $OUTDIR/miprotect.ko ./output/${{ inputs.version }}_phmeop_memk.ko
+            mv $OUTDIR/miprotect.ko ./output/${{ inputs.version }}_miprotect.ko
           else
             cp $OUTDIR/Image ./output/
             cp $OUTDIR/Image.lz4 ./output/
