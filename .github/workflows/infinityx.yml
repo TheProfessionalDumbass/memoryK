@@ -5,12 +5,12 @@ on:
     branches: [main]
     paths:
       - "kernel/**"
-      - ".github/workflows/build-lkm-infinityx.yml"
+      - ".github/workflows/infinityx.yml"
   pull_request:
     branches: [main]
     paths:
       - "kernel/**"
-      - ".github/workflows/build-lkm-infinityx.yml"
+      - ".github/workflows/infinityx.yml"
   workflow_dispatch:
     inputs:
       kernel_repo:
