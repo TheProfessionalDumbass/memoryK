@@ -62,7 +62,6 @@ jobs:
       KERNEL_DIR: kernel-source
       OUT_DIR: out
       DIST_DIR: dist
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
       KBUILD_BUILD_USER: infinityx
       KBUILD_BUILD_HOST: github-actions
       CONFIG_FRAGMENTS: >-
@@ -76,8 +75,6 @@ jobs:
       - name: Reclaim runner disk space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 2048
           root-reserve-mb: 1536
           temp-reserve-mb: 256
           swap-size-mb: 4096
@@ -105,16 +102,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache curl dwarves flex git kmod \
             bc bison build-essential curl dwarves flex git kmod \
             libelf-dev libssl-dev lld llvm python3 rsync xz-utils zstd
-
-      - name: Add swap for ThinLTO
-        run: |
-          sudo fallocate -l 12G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           df -h /
@@ -132,12 +121,6 @@ jobs:
           test -x toolchain/bin/clang
           toolchain/bin/clang --version
           df -h /
-
-      - name: Cache compiler objects
-        uses: hendrikmuhs/ccache-action@v1
-        with:
-          key: infinityx-marble-${{ env.KERNEL_REF }}-${{ env.CLANG_DIR }}
-          max-size: 5G
 
       - name: Integrate miprotect as an in-tree module
         run: |
@@ -157,7 +140,6 @@ jobs:
       - name: Configure Infinity X marble kernel
         working-directory: kernel-source
         env:
-          CC: ccache clang
           CC: clang
         run: |
           set -euo pipefail
@@ -185,23 +167,10 @@ jobs:
           grep -E '^CONFIG_(LOCALVERSION|MODVERSIONS|LTO_CLANG|CFI_CLANG|SHADOW_CALL_STACK)=' \
             "${OUT_DIR}/.config" || true
 
-      - name: Build vmlinux and generate Module.symvers
-        working-directory: kernel-source
-        env:
-          CC: ccache clang
-        run: |
-          set -euo pipefail
-          export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
-          make -j2 O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            CC="${CC}" Image
-          test -s "${OUT_DIR}/vmlinux"
-          test -s "${OUT_DIR}/Module.symvers"
-
       - name: Enforce exact installed-kernel release
         id: compatibility
         working-directory: kernel-source
         env:
-          CC: ccache clang
           CC: clang
         run: |
           set -euo pipefail
@@ -230,7 +199,6 @@ jobs:
       - name: Build miprotect.ko
         working-directory: kernel-source
         env:
-          CC: ccache clang
           CC: clang
         run: |
           set -euo pipefail
