@@ -22,6 +22,7 @@ on:
         description: Exact Infinity X branch, tag, or full commit
         required: true
         default: "16"
+        default: b4d13be4e909f7b74299b45ff0e8696226ca5fd8
         type: string
       expected_release:
         description: Exact uname -r that the LKM must match
@@ -56,6 +57,7 @@ jobs:
       SUBARCH: arm64
       KERNEL_REPO: ${{ inputs.kernel_repo || 'aosp-pablo/android_kernel_xiaomi_sm8450' }}
       KERNEL_REF: ${{ inputs.kernel_ref || '16' }}
+      KERNEL_REF: ${{ inputs.kernel_ref || 'b4d13be4e909f7b74299b45ff0e8696226ca5fd8' }}
       EXPECTED_RELEASE: ${{ inputs.expected_release || '5.10.252-Infx-gb4d13be4e909' }}
       CLANG_REF: ${{ inputs.clang_ref || 'd2de056d8d8de40b2c1ccd39bfadf0c0318f5bad' }}
       CLANG_DIR: ${{ inputs.clang_dir || 'clang-r563880c' }}
