@@ -78,10 +78,14 @@ jobs:
         with:
           root-reserve-mb: 8192
           temp-reserve-mb: 2048
+          root-reserve-mb: 1536
+          temp-reserve-mb: 256
+          swap-size-mb: 4096
           remove-dotnet: "true"
           remove-android: "true"
           remove-haskell: "true"
           remove-codeql: "true"
+          remove-docker-images: "true"
 
       - name: Check out MemKernel
         uses: actions/checkout@v4
@@ -102,6 +106,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache curl dwarves flex git kmod \
+            bc bison build-essential curl dwarves flex git kmod \
             libelf-dev libssl-dev lld llvm python3 rsync xz-utils zstd
 
       - name: Add swap for ThinLTO
@@ -110,6 +115,9 @@ jobs:
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h /
           free -h
 
       - name: Download matching Google Android Clang
@@ -120,8 +128,10 @@ jobs:
           curl --fail --location --retry 4 --retry-all-errors \
             "$archive_url" -o clang.tar.gz
           tar -xzf clang.tar.gz -C toolchain
+          rm -f clang.tar.gz
           test -x toolchain/bin/clang
           toolchain/bin/clang --version
+          df -h /
 
       - name: Cache compiler objects
         uses: hendrikmuhs/ccache-action@v1
@@ -148,6 +158,7 @@ jobs:
         working-directory: kernel-source
         env:
           CC: ccache clang
+          CC: clang
         run: |
           set -euo pipefail
           export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
@@ -191,6 +202,7 @@ jobs:
         working-directory: kernel-source
         env:
           CC: ccache clang
+          CC: clang
         run: |
           set -euo pipefail
           export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
@@ -206,7 +218,7 @@ jobs:
       - name: Build vmlinux and generate Module.symvers
         working-directory: kernel-source
         env:
-          CC: ccache clang
+          CC: clang
         run: |
           set -euo pipefail
           export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
@@ -219,6 +231,7 @@ jobs:
         working-directory: kernel-source
         env:
           CC: ccache clang
+          CC: clang
         run: |
           set -euo pipefail
           export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
