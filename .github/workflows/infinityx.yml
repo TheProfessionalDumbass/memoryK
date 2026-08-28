@@ -160,10 +160,16 @@ jobs:
           scripts/kconfig/merge_config.sh -m -O "${OUT_DIR}" \
             "${OUT_DIR}/.config" "${fragment_paths[@]}"
           scripts/config --file "${OUT_DIR}/.config" -m MEMKERNEL
+          scripts/config --file "${OUT_DIR}/.config" \
+            --set-str LOCALVERSION "-Infx"
+          scripts/config --file "${OUT_DIR}/.config" \
+            --enable LOCALVERSION_AUTO
           make O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="${CC}" olddefconfig
 
           grep -q '^CONFIG_MEMKERNEL=m$' "${OUT_DIR}/.config"
+          grep -qx 'CONFIG_LOCALVERSION="-Infx"' "${OUT_DIR}/.config"
+          grep -qx 'CONFIG_LOCALVERSION_AUTO=y' "${OUT_DIR}/.config"
           grep -E '^CONFIG_(LOCALVERSION|MODVERSIONS|LTO_CLANG|CFI_CLANG|SHADOW_CALL_STACK)=' \
             "${OUT_DIR}/.config" || true
 
@@ -175,6 +181,8 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          git diff --quiet
+          git diff --cached --quiet
           actual_release="$(make -s O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="${CC}" kernelrelease)"
           echo "actual_release=${actual_release}" >> "${GITHUB_OUTPUT}"
           printf 'Expected: %s\nActual:   %s\n' "${EXPECTED_RELEASE}" "${actual_release}"
@@ -203,10 +211,14 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          module_dir="${GITHUB_WORKSPACE}/MemKernel/kernel"
+          test -f "${module_dir}/Makefile"
           make -j2 O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="${CC}" M=drivers/memkernel modules
+            CC="${CC}" M="${module_dir}" CONFIG_MEMKERNEL=m modules
 
           module="${OUT_DIR}/drivers/memkernel/miprotect.ko"
+          module="${module_dir}/miprotect.ko"
           test -s "$module"
           modinfo "$module"
           test "$(modinfo -F vermagic "$module" | awk '{print $1}')" = "${EXPECTED_RELEASE}"
@@ -217,6 +229,7 @@ jobs:
           set -euo pipefail
           mkdir -p "${GITHUB_WORKSPACE}/${DIST_DIR}"
           module="${OUT_DIR}/drivers/memkernel/miprotect.ko"
+          module="${GITHUB_WORKSPACE}/MemKernel/kernel/miprotect.ko"
           cp "$module" "${GITHUB_WORKSPACE}/${DIST_DIR}/miprotect.ko"
           cp "${OUT_DIR}/.config" "${GITHUB_WORKSPACE}/${DIST_DIR}/kernel.config"
           cp "${OUT_DIR}/Module.symvers" "${GITHUB_WORKSPACE}/${DIST_DIR}/Module.symvers"
