@@ -1,0 +1,263 @@
+name: Build miprotect LKM for Infinity X marble
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "kernel/**"
+      - ".github/workflows/build-lkm-infinityx.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "kernel/**"
+      - ".github/workflows/build-lkm-infinityx.yml"
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: Infinity X kernel repository
+        required: true
+        default: aosp-pablo/android_kernel_xiaomi_sm8450
+        type: string
+      kernel_ref:
+        description: Exact Infinity X branch, tag, or full commit
+        required: true
+        default: "16"
+        type: string
+      expected_release:
+        description: Exact uname -r that the LKM must match
+        required: true
+        default: 5.10.252-Infx-gb4d13be4e909
+        type: string
+      clang_ref:
+        description: Google Android Clang repository commit/ref containing clang-r563880
+        required: true
+        default: d2de056d8d8de40b2c1ccd39bfadf0c0318f5bad
+        type: string
+      clang_dir:
+        description: Google Android Clang directory
+        required: true
+        default: clang-r563880c
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infinityx-lkm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-lkm:
+    name: Infinity X marble miprotect.ko
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KERNEL_REPO: ${{ inputs.kernel_repo || 'aosp-pablo/android_kernel_xiaomi_sm8450' }}
+      KERNEL_REF: ${{ inputs.kernel_ref || '16' }}
+      EXPECTED_RELEASE: ${{ inputs.expected_release || '5.10.252-Infx-gb4d13be4e909' }}
+      CLANG_REF: ${{ inputs.clang_ref || 'd2de056d8d8de40b2c1ccd39bfadf0c0318f5bad' }}
+      CLANG_DIR: ${{ inputs.clang_dir || 'clang-r563880c' }}
+      KERNEL_DIR: kernel-source
+      OUT_DIR: out
+      DIST_DIR: dist
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      KBUILD_BUILD_USER: infinityx
+      KBUILD_BUILD_HOST: github-actions
+      CONFIG_FRAGMENTS: >-
+        vendor/waipio_GKI.config
+        vendor/xiaomi_GKI.config
+        vendor/marble_GKI.config
+        vendor/debugfs.config
+        vendor/infinity.config
+
+    steps:
+      - name: Reclaim runner disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+
+      - name: Check out MemKernel
+        uses: actions/checkout@v4
+        with:
+          path: MemKernel
+          fetch-depth: 1
+
+      - name: Check out Infinity X kernel base
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          ref: ${{ env.KERNEL_REF }}
+          path: ${{ env.KERNEL_DIR }}
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl dwarves flex git kmod \
+            libelf-dev libssl-dev lld llvm python3 rsync xz-utils zstd
+
+      - name: Add swap for ThinLTO
+        run: |
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Download matching Google Android Clang
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain
+          archive_url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_REF}/${CLANG_DIR}.tar.gz"
+          curl --fail --location --retry 4 --retry-all-errors \
+            "$archive_url" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C toolchain
+          test -x toolchain/bin/clang
+          toolchain/bin/clang --version
+
+      - name: Cache compiler objects
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: infinityx-marble-${{ env.KERNEL_REF }}-${{ env.CLANG_DIR }}
+          max-size: 5G
+
+      - name: Integrate miprotect as an in-tree module
+        run: |
+          set -euo pipefail
+          test -d MemKernel/kernel
+          test -f MemKernel/kernel/Makefile
+          test -f MemKernel/kernel/Kconfig
+
+          ln -s "${GITHUB_WORKSPACE}/MemKernel/kernel" \
+            "${GITHUB_WORKSPACE}/${KERNEL_DIR}/drivers/memkernel"
+
+          printf '\nobj-$(CONFIG_MEMKERNEL) += memkernel/\n' \
+            >> "${KERNEL_DIR}/drivers/Makefile"
+          printf '\nsource "drivers/memkernel/Kconfig"\n' \
+            >> "${KERNEL_DIR}/drivers/Kconfig"
+
+      - name: Configure Infinity X marble kernel
+        working-directory: kernel-source
+        env:
+          CC: ccache clang
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          make O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="${CC}" gki_defconfig
+
+          fragment_paths=()
+          for fragment in ${CONFIG_FRAGMENTS}; do
+            path="arch/arm64/configs/${fragment}"
+            if [[ ! -f "$path" ]]; then
+              echo "::error::Missing Infinity X config fragment: $path"
+              exit 1
+            fi
+            fragment_paths+=("$path")
+          done
+
+          scripts/kconfig/merge_config.sh -m -O "${OUT_DIR}" \
+            "${OUT_DIR}/.config" "${fragment_paths[@]}"
+          scripts/config --file "${OUT_DIR}/.config" -m MEMKERNEL
+          make O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="${CC}" olddefconfig
+
+          grep -q '^CONFIG_MEMKERNEL=m$' "${OUT_DIR}/.config"
+          grep -E '^CONFIG_(LOCALVERSION|MODVERSIONS|LTO_CLANG|CFI_CLANG|SHADOW_CALL_STACK)=' \
+            "${OUT_DIR}/.config" || true
+
+      - name: Build vmlinux and generate Module.symvers
+        working-directory: kernel-source
+        env:
+          CC: ccache clang
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          make -j2 O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="${CC}" Image
+          test -s "${OUT_DIR}/vmlinux"
+          test -s "${OUT_DIR}/Module.symvers"
+
+      - name: Enforce exact installed-kernel release
+        id: compatibility
+        working-directory: kernel-source
+        env:
+          CC: ccache clang
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          actual_release="$(make -s O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="${CC}" kernelrelease)"
+          echo "actual_release=${actual_release}" >> "${GITHUB_OUTPUT}"
+          printf 'Expected: %s\nActual:   %s\n' "${EXPECTED_RELEASE}" "${actual_release}"
+          if [[ "${actual_release}" != "${EXPECTED_RELEASE}" ]]; then
+            echo "::error::Kernel source/ref does not reproduce the installed Infinity X kernel."
+            echo "::error::Select the source ref that builds ${EXPECTED_RELEASE}; vermagic must not be forged."
+            exit 1
+          fi
+
+      - name: Build vmlinux and generate Module.symvers
+        working-directory: kernel-source
+        env:
+          CC: ccache clang
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          make -j2 O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="${CC}" Image
+          test -s "${OUT_DIR}/vmlinux"
+          test -s "${OUT_DIR}/Module.symvers"
+
+      - name: Build miprotect.ko
+        working-directory: kernel-source
+        env:
+          CC: ccache clang
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/toolchain/bin:${PATH}"
+          make -j2 O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="${CC}" M=drivers/memkernel modules
+
+          module="${OUT_DIR}/drivers/memkernel/miprotect.ko"
+          test -s "$module"
+          modinfo "$module"
+          test "$(modinfo -F vermagic "$module" | awk '{print $1}')" = "${EXPECTED_RELEASE}"
+
+      - name: Prepare verified artifact
+        working-directory: kernel-source
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/${DIST_DIR}"
+          module="${OUT_DIR}/drivers/memkernel/miprotect.ko"
+          cp "$module" "${GITHUB_WORKSPACE}/${DIST_DIR}/miprotect.ko"
+          cp "${OUT_DIR}/.config" "${GITHUB_WORKSPACE}/${DIST_DIR}/kernel.config"
+          cp "${OUT_DIR}/Module.symvers" "${GITHUB_WORKSPACE}/${DIST_DIR}/Module.symvers"
+
+          {
+            echo "kernel_repo=${KERNEL_REPO}"
+            echo "requested_ref=${KERNEL_REF}"
+            echo "resolved_commit=$(git rev-parse HEAD)"
+            echo "kernel_release=${{ steps.compatibility.outputs.actual_release }}"
+            echo "clang_dir=${CLANG_DIR}"
+            echo "clang_ref=${CLANG_REF}"
+            echo
+            modinfo "$module"
+          } > "${GITHUB_WORKSPACE}/${DIST_DIR}/build-info.txt"
+
+          sha256sum "${GITHUB_WORKSPACE}/${DIST_DIR}/miprotect.ko" \
+            > "${GITHUB_WORKSPACE}/${DIST_DIR}/SHA256SUMS"
+
+      - name: Upload miprotect LKM
+        uses: actions/upload-artifact@v4
+        with:
+          name: miprotect-${{ steps.compatibility.outputs.actual_release }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
