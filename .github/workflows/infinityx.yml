@@ -232,8 +232,40 @@ jobs:
             CC="${CC}" \
             olddefconfig
 
+          # .config is correct at this point, but this kernel's `kernelrelease`
+          # target is a no-sync-config target.  It reads CONFIG_LOCALVERSION
+          # through include/config/auto.conf, so force that generated mirror to
+          # be rebuilt from the final .config before calculating the release.
+          rm -f \
+            "${OUT_DIR}/include/config/auto.conf" \
+            "${OUT_DIR}/include/config/auto.conf.cmd" \
+            "${OUT_DIR}/include/generated/autoconf.h" \
+            "${OUT_DIR}/include/config/kernel.release"
+
+          make O="${OUT_DIR}" \
+            ARCH="${ARCH}" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC="${CC}" \
+            prepare
+
+          echo "Checking LOCALVERSION in the authoritative config and Kbuild mirror:"
+          grep -n '^CONFIG_LOCALVERSION' "${OUT_DIR}/.config" || true
+          grep -n '^CONFIG_LOCALVERSION' "${OUT_DIR}/include/config/auto.conf" || true
+
           grep -qx 'CONFIG_LOCALVERSION="-Infx"' "${OUT_DIR}/.config"
           grep -qx 'CONFIG_LOCALVERSION_AUTO=y' "${OUT_DIR}/.config"
+          grep -qx 'CONFIG_LOCALVERSION="-Infx"' "${OUT_DIR}/include/config/auto.conf"
+          grep -qx 'CONFIG_LOCALVERSION_AUTO=y' "${OUT_DIR}/include/config/auto.conf"
+
+          prepared_release="$(cat "${OUT_DIR}/include/config/kernel.release")"
+          printf 'Prepared kernel.release: %s\n' "${prepared_release}"
+
+          if [[ "${prepared_release}" != "${EXPECTED_RELEASE}" ]]; then
+            echo "::error::prepare generated the wrong kernel release."
+            echo "::error::Expected ${EXPECTED_RELEASE}, got ${prepared_release}."
+            exit 1
+          fi
 
           # Building an external module requires module support.
           grep -qx 'CONFIG_MODULES=y' "${OUT_DIR}/.config"
@@ -259,6 +291,8 @@ jobs:
             exit 1
           fi
 
+          cached_release="$(cat "${OUT_DIR}/include/config/kernel.release")"
+
           actual_release="$(
             make -s O="${OUT_DIR}" \
               ARCH="${ARCH}" \
@@ -270,9 +304,15 @@ jobs:
 
           echo "actual_release=${actual_release}" >> "${GITHUB_OUTPUT}"
 
-          printf 'Expected: %s\nActual:   %s\n' \
+          printf 'Expected: %s\nPrepared: %s\nActual:   %s\n' \
             "${EXPECTED_RELEASE}" \
+            "${cached_release}" \
             "${actual_release}"
+
+          if [[ "${cached_release}" != "${EXPECTED_RELEASE}" ]]; then
+            echo "::error::include/config/kernel.release does not match the installed Infinity X release."
+            exit 1
+          fi
 
           if [[ "${actual_release}" != "${EXPECTED_RELEASE}" ]]; then
             echo "::error::Kernel source/ref/config does not reproduce the installed Infinity X kernel release."
