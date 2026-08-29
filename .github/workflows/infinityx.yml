@@ -111,6 +111,23 @@ jobs:
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
+          current_swap_kib="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)"
+          required_swap_kib=$((8 * 1024 * 1024))
+
+          if (( current_swap_kib >= required_swap_kib )); then
+            echo "Existing swap is sufficient: $((current_swap_kib / 1024 / 1024)) GiB"
+          else
+            swap_file="${RUNNER_TEMP}/evox-thinlto.swap"
+            if sudo swapon --show=NAME --noheadings | grep -Fxq "${swap_file}"; then
+              echo "Workflow swap is already active: ${swap_file}"
+            else
+              sudo rm -f "${swap_file}"
+              sudo fallocate -l 12G "${swap_file}"
+              sudo chmod 600 "${swap_file}"
+              sudo mkswap "${swap_file}"
+              sudo swapon "${swap_file}"
+            fi
+          fi
           free -h
 
       - name: Restore Android Clang cache
