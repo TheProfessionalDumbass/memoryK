@@ -169,9 +169,17 @@ jobs:
           make O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="ccache clang" olddefconfig
 
+          # kernelrelease is a no-sync Kbuild target. Refresh auto.conf first;
+          # otherwise it can read the stale values created by gki_defconfig and
+          # report the checkout's "-dirty" SCM suffix instead of the final config.
+          make O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="ccache clang" syncconfig
+
           grep -q '^CONFIG_MODULES=y$' "${OUT_DIR}/.config"
           grep -q '^CONFIG_MODVERSIONS=y$' "${OUT_DIR}/.config"
           grep -q '^CONFIG_MEMKERNEL=m$' "${OUT_DIR}/.config"
+          grep -q '^CONFIG_LOCALVERSION="-gki-ge8fcf2558711"$' "${OUT_DIR}/.config"
+          grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' "${OUT_DIR}/.config"
 
           actual_release="$(make -s O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelrelease)"
           echo "Kernel release: ${actual_release}"
