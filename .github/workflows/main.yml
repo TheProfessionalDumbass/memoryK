@@ -48,7 +48,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
 
       # Bump this only when the base-kernel preparation recipe changes.
-      PREPARED_CACHE_REVISION: "3"
+      PREPARED_CACHE_REVISION: "4"
       MAKE_JOBS: "2"
       KBUILD_BUILD_USER: evolution-x
       KBUILD_BUILD_HOST: github-actions
@@ -128,7 +128,7 @@ jobs:
 
       - name: Restore Android Clang cache
         id: clang-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: android-clang
           key: android-clang-${{ runner.os }}-${{ runner.arch }}-r563880c-b54cd2c8
@@ -151,6 +151,13 @@ jobs:
           mkdir -p android-clang
           mv "${checkout}/${CLANG_VERSION}" android-clang/
           test -x "android-clang/${CLANG_VERSION}/bin/clang"
+
+      - name: Save Android Clang cache
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: android-clang
+          key: android-clang-${{ runner.os }}-${{ runner.arch }}-r563880c-b54cd2c8
 
       - name: Select and verify compiler
         shell: bash
@@ -225,9 +232,10 @@ jobs:
           echo "Prepared kernel release: ${release}"
           test "${release}" = "${EXPECTED_KERNEL_RELEASE}"
 
-          # Linking Image/vmlinux is required to generate correct symbol CRCs.
+          # Image creates vmlinux.symvers. The modules target then combines
+          # vmlinux and in-tree module exports into the required Module.symvers.
           make -j"${MAKE_JOBS}" O="${OUT_DIR}" ARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 CC="ccache clang" Image
+            LLVM=1 LLVM_IAS=1 CC="ccache clang" Image modules
 
           test -s "${OUT_DIR}/Module.symvers"
           test -x "${OUT_DIR}/scripts/mod/modpost"
