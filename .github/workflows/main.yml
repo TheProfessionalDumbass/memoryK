@@ -1,0 +1,242 @@
+name: Build Evolution X Marble LKM
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/build-lkm-evolution-x.yml"
+      - "kernel/**"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/build-lkm-evolution-x.yml"
+      - "kernel/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evolution-x-marble-lkm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-lkm:
+    name: Evolution X marble 5.10.256 LKM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KERNEL_REPOSITORY: Evolution-X-Devices/kernel_xiaomi_sm8450
+      KERNEL_COMMIT: e8fcf25587112c854814dbe399a99110d18c82de
+      KERNEL_RELEASE: 5.10.256-gki-ge8fcf2558711
+      CLANG_REPOSITORY: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+      CLANG_COMMIT: b54cd2c8e9e0bb057aef3804d42d39c5ac4674c7
+      CLANG_VERSION: clang-r563880c
+      KERNEL_DIR: ${{ github.workspace }}/android-kernel
+      OUT_DIR: ${{ github.workspace }}/kernel-out
+      DIST_DIR: ${{ github.workspace }}/dist
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      KBUILD_BUILD_USER: evolution-x
+      KBUILD_BUILD_HOST: github-actions
+
+    steps:
+      - name: Checkout MemKernel
+        uses: actions/checkout@v4
+        with:
+          path: MemKernel
+          persist-credentials: false
+
+      - name: Checkout exact Evolution X kernel
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ env.KERNEL_COMMIT }}
+          path: android-kernel
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify pinned kernel revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_commit="$(git -C "${KERNEL_DIR}" rev-parse HEAD)"
+          test "${actual_commit}" = "${KERNEL_COMMIT}"
+          echo "Building Evolution X kernel commit ${actual_commit}"
+
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/share/swift || true
+          df -h /
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio flex git kmod libelf-dev \
+            libncurses-dev libssl-dev make python3 rsync xz-utils zstd
+
+      - name: Restore Clang cache
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: android-clang
+          key: android-clang-${{ runner.os }}-${{ runner.arch }}-r563880c-b54cd2c8
+
+      - name: Fetch pinned Android Clang r563880c
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain_checkout="${RUNNER_TEMP}/android-clang-repository"
+          rm -rf "${toolchain_checkout}"
+          git init "${toolchain_checkout}"
+          git -C "${toolchain_checkout}" remote add origin "${CLANG_REPOSITORY}"
+          git -C "${toolchain_checkout}" sparse-checkout init --cone
+          git -C "${toolchain_checkout}" sparse-checkout set "${CLANG_VERSION}"
+          git -C "${toolchain_checkout}" fetch --depth=1 origin "${CLANG_COMMIT}"
+          git -C "${toolchain_checkout}" checkout --detach FETCH_HEAD
+          test "$(git -C "${toolchain_checkout}" rev-parse HEAD)" = "${CLANG_COMMIT}"
+
+          mkdir -p android-clang
+          mv "${toolchain_checkout}/${CLANG_VERSION}" android-clang/
+          test -x "android-clang/${CLANG_VERSION}/bin/clang"
+
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${GITHUB_WORKSPACE}/android-clang/${CLANG_VERSION}/bin" >> "${GITHUB_PATH}"
+          "${GITHUB_WORKSPACE}/android-clang/${CLANG_VERSION}/bin/clang" --version
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: evox-marble-lkm-${{ runner.os }}-${{ env.KERNEL_COMMIT }}-${{ hashFiles('kernel/**') }}
+          restore-keys: |
+            evox-marble-lkm-${{ runner.os }}-${{ env.KERNEL_COMMIT }}-
+
+      - name: Add MemKernel driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver_source="${GITHUB_WORKSPACE}/MemKernel/kernel"
+          test -f "${driver_source}/Kconfig"
+          test -f "${driver_source}/Makefile"
+
+          ln -s "${driver_source}" "${KERNEL_DIR}/drivers/memkernel"
+          grep -q 'CONFIG_MEMKERNEL' "${KERNEL_DIR}/drivers/Makefile" || \
+            printf '\nobj-$(CONFIG_MEMKERNEL) += memkernel/\n' >> "${KERNEL_DIR}/drivers/Makefile"
+          grep -q 'drivers/memkernel/Kconfig' "${KERNEL_DIR}/drivers/Kconfig" || \
+            sed -i '/endmenu/i source "drivers/memkernel/Kconfig"' "${KERNEL_DIR}/drivers/Kconfig"
+
+      - name: Configure Evolution X marble kernel
+        shell: bash
+        working-directory: android-kernel
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/android-clang/${CLANG_VERSION}/bin:${PATH}"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_NOHASHDIR=true
+          ccache --max-size=5G
+          ccache --zero-stats || true
+
+          make O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="ccache clang" gki_defconfig
+
+          ./scripts/kconfig/merge_config.sh -m -O "${OUT_DIR}" \
+            "${OUT_DIR}/.config" \
+            arch/arm64/configs/vendor/waipio_GKI.config \
+            arch/arm64/configs/vendor/xiaomi_GKI.config \
+            arch/arm64/configs/vendor/marble_GKI.config \
+            arch/arm64/configs/vendor/debugfs.config
+
+          # Freeze the release string to the value reported by the target device.
+          # This avoids a "-dirty" suffix after adding the out-of-tree driver.
+          scripts/config --file "${OUT_DIR}/.config" \
+            --set-str LOCALVERSION "-gki-ge8fcf2558711" \
+            --disable LOCALVERSION_AUTO \
+            --module MEMKERNEL
+
+          make O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="ccache clang" olddefconfig
+
+          grep -q '^CONFIG_MODULES=y$' "${OUT_DIR}/.config"
+          grep -q '^CONFIG_MODVERSIONS=y$' "${OUT_DIR}/.config"
+          grep -q '^CONFIG_MEMKERNEL=m$' "${OUT_DIR}/.config"
+
+          actual_release="$(make -s O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelrelease)"
+          echo "Kernel release: ${actual_release}"
+          test "${actual_release}" = "${KERNEL_RELEASE}"
+
+      - name: Build matching kernel and LKM
+        shell: bash
+        working-directory: android-kernel
+        run: |
+          set -euo pipefail
+          export PATH="${GITHUB_WORKSPACE}/android-clang/${CLANG_VERSION}/bin:${PATH}"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_NOHASHDIR=true
+
+          # The full kernel build is intentional: CONFIG_MODVERSIONS requires the
+          # generated Module.symvers for a loadable module with matching CRCs.
+          make -j2 O="${OUT_DIR}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="ccache clang" Image modules
+
+      - name: Validate and prepare artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          module="${OUT_DIR}/drivers/memkernel/miprotect.ko"
+          test -s "${module}"
+          test -s "${OUT_DIR}/Module.symvers"
+
+          mkdir -p "${DIST_DIR}"
+          cp "${module}" "${DIST_DIR}/miprotect.ko"
+          cp "${OUT_DIR}/Module.symvers" "${DIST_DIR}/Module.symvers"
+          cp "${OUT_DIR}/.config" "${DIST_DIR}/kernel.config"
+          llvm-strip --strip-debug "${DIST_DIR}/miprotect.ko"
+
+          vermagic="$(modinfo -F vermagic "${DIST_DIR}/miprotect.ko")"
+          echo "${vermagic}" | tee "${DIST_DIR}/vermagic.txt"
+          case "${vermagic}" in
+            "${KERNEL_RELEASE}"*) ;;
+            *)
+              echo "::error::Unexpected module vermagic: ${vermagic}"
+              exit 1
+              ;;
+          esac
+
+          sha256sum "${DIST_DIR}/miprotect.ko" | tee "${DIST_DIR}/miprotect.ko.sha256"
+          {
+            echo "kernel_repository=${KERNEL_REPOSITORY}"
+            echo "kernel_commit=${KERNEL_COMMIT}"
+            echo "kernel_release=${KERNEL_RELEASE}"
+            echo "clang_version=${CLANG_VERSION}"
+            echo "clang_commit=${CLANG_COMMIT}"
+            echo "module_vermagic=${vermagic}"
+          } > "${DIST_DIR}/build-info.txt"
+
+          ccache --show-stats || true
+
+      - name: Upload Evolution X marble LKM
+        uses: actions/upload-artifact@v4
+        with:
+          name: evolution-x-marble-5.10.256-miprotect
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            dist/miprotect.ko
+            dist/miprotect.ko.sha256
+            dist/vermagic.txt
+            dist/build-info.txt
+            dist/Module.symvers
+            dist/kernel.config
