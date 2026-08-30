@@ -1,7 +1,7 @@
 ifneq ($(KERNELRELEASE),)
 # kbuild part of makefile
 	obj-$(CONFIG_MEMKERNEL)  := miprotect.o
-	miprotect-y := memory.o process.o entry.o
+	miprotect-y := memory.o process.o entry.o input_hook.o
 else
 # normal makefile
 default:
