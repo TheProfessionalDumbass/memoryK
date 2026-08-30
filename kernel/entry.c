@@ -16,7 +16,19 @@
 #include "memory.h"
 #include "process.h"
 
+
+
 #define DEVICE_NAME "miprotect"
+
+
+static int g_aim_dx = 0;
+static int g_aim_dy = 0;
+static DEFINE_SPINLOCK(g_aim_lock);
+
+
+static int g_screen_width = 1080;
+static int g_screen_height = 2400;
+
 
 static DEFINE_MUTEX(driver_mutex);
 
