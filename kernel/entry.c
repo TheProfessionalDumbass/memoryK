@@ -79,11 +79,11 @@ static long dispatch_ioctl(struct file *const file, unsigned int const cmd, unsi
 	}
 	case OP_AIM_MOVE: {
     struct AimDelta delta;
-    if (copy_from_user(&delta, (void __user *)arg, sizeof(delta)) != 0) {
-        return -1;
-    }
+    if (copy_from_user(&delta, (void __user *)arg, sizeof(delta)))
+        return -EFAULT;
+    
     spin_lock(&g_aim_lock);
-    g_aim_dx += delta.dx;
+    g_aim_dx += delta.dx;  // Accumulate just in case
     g_aim_dy += delta.dy;
     spin_unlock(&g_aim_lock);
     break;
