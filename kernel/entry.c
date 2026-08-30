@@ -1,129 +1,148 @@
-// MIT License
-/*
- * Memory Operation driver for Linux Android
- *
- * Original author:  Jiang-Night
- * Current maintainer: Poko
- *
-*/
-
 #include <linux/module.h>
 #include <linux/fs.h>
-#include <linux/miscdevice.h>
 #include <linux/uaccess.h>
-#include <linux/mutex.h>
+#include <linux/device.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/version.h>
+
 #include "comm.h"
-#include "memory.h"
-#include "process.h"
-
-
 
 #define DEVICE_NAME "miprotect"
+#define CLASS_NAME "miprotect_class"
 
+static int major_num;
+static struct class *device_class = NULL;
+static struct device *device_obj = NULL;
 
-static int g_aim_dx = 0;
-static int g_aim_dy = 0;
-static DEFINE_SPINLOCK(g_aim_lock);
+// ------------------------------------------------------------
+//  GLOBALS FOR AIMBOT (shared with input_hook.c)
+// ------------------------------------------------------------
+int g_aim_dx = 0;
+int g_aim_dy = 0;
+DEFINE_SPINLOCK(g_aim_lock);
 
+// Default screen resolution (you can update these dynamically via IOCTL if needed)
+int g_screen_width = 1080;
+int g_screen_height = 2400;
 
-static int g_screen_width = 1080;
-static int g_screen_height = 2400;
+// ------------------------------------------------------------
+//  EXTERNAL FUNCTIONS (implemented in memory.c / process.c)
+// ------------------------------------------------------------
+extern int read_process_memory(pid_t pid, uintptr_t addr, void *buffer, size_t size);
+extern int write_process_memory(pid_t pid, uintptr_t addr, void *buffer, size_t size);
+extern uintptr_t get_module_base(pid_t pid, char *name);
 
+// ------------------------------------------------------------
+//  EXTERNAL HOOK FUNCTIONS (implemented in input_hook.c)
+// ------------------------------------------------------------
+extern int install_input_hook(void);
+extern void remove_input_hook(void);
 
-static DEFINE_MUTEX(driver_mutex);
+// ------------------------------------------------------------
+//  IOCTL DISPATCHER
+// ------------------------------------------------------------
+static long dispatch_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
+    switch(cmd) {
+        case OP_READ_MEM: {
+            struct CopyMemory cm;
+            if (copy_from_user(&cm, (void __user *)arg, sizeof(cm)))
+                return -EFAULT;
+            if (read_process_memory(cm.pid, cm.addr, cm.buffer, cm.size) < 0)
+                return -EIO;
+            break;
+        }
+        case OP_WRITE_MEM: {
+            struct CopyMemory cm;
+            if (copy_from_user(&cm, (void __user *)arg, sizeof(cm)))
+                return -EFAULT;
+            if (write_process_memory(cm.pid, cm.addr, cm.buffer, cm.size) < 0)
+                return -EIO;
+            break;
+        }
+        case OP_MODULE_BASE: {
+            struct ModuleBase mb;
+            if (copy_from_user(&mb, (void __user *)arg, sizeof(mb)))
+                return -EFAULT;
+            mb.base = get_module_base(mb.pid, mb.name);
+            if (copy_to_user((void __user *)arg, &mb, sizeof(mb)))
+                return -EFAULT;
+            break;
+        }
+        // ------------------------------------------------------------
+        //  NEW: Handle Aimbot delta from userspace
+        // ------------------------------------------------------------
+        case OP_AIM_MOVE: {
+            struct AimDelta delta;
+            if (copy_from_user(&delta, (void __user *)arg, sizeof(delta)))
+                return -EFAULT;
 
-
-static int dispatch_open(struct inode *node, struct file *file) {
-	if (!mutex_trylock(&driver_mutex))
-		return -EBUSY;
-	return 0;
+            spin_lock(&g_aim_lock);
+            g_aim_dx += delta.dx;
+            g_aim_dy += delta.dy;
+            spin_unlock(&g_aim_lock);
+            break;
+        }
+        default:
+            return -ENOTTY;
+    }
+    return 0;
 }
 
-static int dispatch_close(struct inode *node, struct file *file) {
-	mutex_unlock(&driver_mutex);
-	return 0;
-}
-
-static long dispatch_ioctl(struct file *const file, unsigned int const cmd, unsigned long const arg)
-{
-	struct CopyMemory cm;
-	struct ModuleBase mb;
-	char name[0x100] = {0};
-
-	switch (cmd)
-	{
-	case OP_READ_MEM:
-	{
-		if (copy_from_user(&cm, (void __user *)arg, sizeof(cm)) != 0) {
-			return -1;
-		}
-		return readwrite_process_memory(cm.pid, cm.addr, cm.buffer, cm.size, false);
-	}
-	case OP_WRITE_MEM:
-	{
-		if (copy_from_user(&cm, (void __user *)arg, sizeof(cm)) != 0) {
-			return -1;
-		}
-		return readwrite_process_memory(cm.pid, cm.addr, cm.buffer, cm.size, true);
-	}
-	case OP_MODULE_BASE:
-	{
-		if (copy_from_user(&mb, (void __user *)arg, sizeof(mb)) != 0 || copy_from_user(name, (void __user *)mb.name, sizeof(name) - 1) != 0) {
-			return -1;
-		}
-		mb.base = get_module_base(mb.pid, name);
-		if (copy_to_user((void __user *)arg, &mb, sizeof(mb)) != 0) {
-			return -1;
-		}
-		break;
-	}
-	case OP_AIM_MOVE: {
-    struct AimDelta delta;
-    if (copy_from_user(&delta, (void __user *)arg, sizeof(delta)))
-        return -EFAULT;
-    
-    spin_lock(&g_aim_lock);
-    g_aim_dx += delta.dx;  // Accumulate just in case
-    g_aim_dy += delta.dy;
-    spin_unlock(&g_aim_lock);
-    break;
-	}
-	default:
-		break;
-	}
-	return 0;
-}
-
-static struct file_operations dispatch_functions = {
-	.owner = THIS_MODULE,
-	.open = dispatch_open,
-	.release = dispatch_close,
-	.unlocked_ioctl = dispatch_ioctl,
+static struct file_operations fops = {
+    .unlocked_ioctl = dispatch_ioctl,
+    .open = NULL,
+    .release = NULL,
 };
 
-static struct miscdevice misc = {
-	.minor = MISC_DYNAMIC_MINOR,
-	.name = DEVICE_NAME,
-	.fops = &dispatch_functions,
-};
+// ------------------------------------------------------------
+//  INIT / EXIT
+// ------------------------------------------------------------
+static int __init memkernel_init(void) {
+    major_num = register_chrdev(0, DEVICE_NAME, &fops);
+    if (major_num < 0) {
+        pr_err("Failed to register device\n");
+        return major_num;
+    }
 
-int __init memkernel_entry(void)
-{
-	int ret;
-	printk("[+] memkernel_entry");
-	ret = misc_register(&misc);
-	return ret;
+    device_class = class_create(THIS_MODULE, CLASS_NAME);
+    if (IS_ERR(device_class)) {
+        unregister_chrdev(major_num, DEVICE_NAME);
+        return PTR_ERR(device_class);
+    }
+
+    device_obj = device_create(device_class, NULL, MKDEV(major_num, 0), NULL, DEVICE_NAME);
+    if (IS_ERR(device_obj)) {
+        class_destroy(device_class);
+        unregister_chrdev(major_num, DEVICE_NAME);
+        return PTR_ERR(device_obj);
+    }
+
+    // ------------------------------------------------------------
+    //  INSTALL THE input_event KPROBE HOOK
+    // ------------------------------------------------------------
+    install_input_hook();
+
+    pr_info("miprotect: Driver loaded successfully (major %d)\n", major_num);
+    return 0;
 }
 
-void __exit memkernel_unload(void)
-{
-	printk("[+] memkernel_unload");
-	misc_deregister(&misc);
+static void __exit memkernel_exit(void) {
+    // ------------------------------------------------------------
+    //  REMOVE THE HOOK FIRST (to avoid use-after-free)
+    // ------------------------------------------------------------
+    remove_input_hook();
+
+    device_destroy(device_class, MKDEV(major_num, 0));
+    class_destroy(device_class);
+    unregister_chrdev(major_num, DEVICE_NAME);
+    pr_info("miprotect: Driver unloaded\n");
 }
 
-module_init(memkernel_entry);
-module_exit(memkernel_unload);
+module_init(memkernel_init);
+module_exit(memkernel_exit);
 
-MODULE_DESCRIPTION("Linux Kernel.");
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Linux");
+MODULE_AUTHOR("memoryK");
+MODULE_DESCRIPTION("Kernel driver with memory access + touch injection (Kernel 5.10)");
+MODULE_VERSION("2.0");
