@@ -1,31 +1,87 @@
-name: Build LKM
+name: Build GKI LKM
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
     paths:
       - ".github/workflows/build-lkm.yml"
+      - ".github/workflows/gki-kernel.yml"
       - "kernel/**"
+
   pull_request:
-    branches: ["main"]
+    branches:
+      - main
     paths:
       - ".github/workflows/build-lkm.yml"
+      - ".github/workflows/gki-kernel.yml"
       - "kernel/**"
+
   workflow_dispatch:
+    inputs:
+      version:
+        description: "GKI branch/version (example: android15-6.6)"
+        required: true
+        default: "android15-6.6"
+        type: string
+
+      sub_level:
+        description: "Linux sublevel (example: 89 = Linux 6.6.89)"
+        required: true
+        default: "89"
+        type: string
+
+      os_patch_level:
+        description: "GKI patch level (example: 2025-06)"
+        required: true
+        default: "2025-06"
+        type: string
+
+      release:
+        description: "Google GKI release number (example: 23 for _r23)"
+        required: true
+        default: "23"
+        type: string
 
 jobs:
   build-lkm:
-    strategy:
-      matrix:
-        include:
-          - version: "android12-5.10"
-            sub_level: 257
-            os_patch_level: "2026-07"
-
     uses: ./.github/workflows/gki-kernel.yml
+
     with:
-      version: ${{ matrix.version }}
-      version_name: ${{ matrix.version }}.${{ matrix.sub_level }}
-      tag: ${{ matrix.version }}-${{ matrix.os_patch_level }}
-      os_patch_level: ${{ matrix.os_patch_level }}
+      # Manual Run workflow values, otherwise use defaults
+      version: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.version
+            || 'android15-6.6' }}
+
+      version_name: >-
+        ${{ format(
+            '{0}.{1}',
+            github.event_name == 'workflow_dispatch'
+              && inputs.version
+              || 'android15-6.6',
+            github.event_name == 'workflow_dispatch'
+              && inputs.sub_level
+              || '89'
+        ) }}
+
+      tag: >-
+        ${{ format(
+            '{0}-{1}_r{2}',
+            github.event_name == 'workflow_dispatch'
+              && inputs.version
+              || 'android15-6.6',
+            github.event_name == 'workflow_dispatch'
+              && inputs.os_patch_level
+              || '2025-06',
+            github.event_name == 'workflow_dispatch'
+              && inputs.release
+              || '23'
+        ) }}
+
+      os_patch_level: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.os_patch_level
+            || '2025-06' }}
+
       build_lkm: true
