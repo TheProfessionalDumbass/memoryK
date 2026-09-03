@@ -199,7 +199,14 @@ jobs:
       - name: Make working directory clean to avoid dirty
         working-directory: android-kernel
         run: |
-          rm common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          # Legacy build.sh kernels tolerate removing these lists to bypass ABI
+          # export checks. Bazel declares them as source inputs, so deleting them
+          # makes //common:kernel_aarch64 fail before compilation starts.
+          if [ -e build/build.sh ]; then
+            rm common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          else
+            echo "Keeping protected exports lists required by Bazel"
+          fi
           git config --global user.email "bot@kernelsu.org"
           git config --global user.name "KernelSUBot"
           cd common/ && git add -A && git commit -a -m "Add MemKernel"
