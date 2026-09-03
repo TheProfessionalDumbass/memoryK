@@ -65,7 +65,19 @@ jobs:
               || '89'
         ) }}
 
-      tag: >-
+      # The manifest branch and the kernel/common release tag are different refs.
+      manifest_branch: >-
+        ${{ format(
+            'common-{0}-{1}',
+            github.event_name == 'workflow_dispatch'
+              && inputs.version
+              || 'android15-6.6',
+            github.event_name == 'workflow_dispatch'
+              && inputs.os_patch_level
+              || '2025-06'
+        ) }}
+
+      kernel_tag: >-
         ${{ format(
             '{0}-{1}_r{2}',
             github.event_name == 'workflow_dispatch'
@@ -85,3 +97,4 @@ jobs:
             || '2025-06' }}
 
       build_lkm: true
+
