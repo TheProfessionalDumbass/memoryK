@@ -123,7 +123,8 @@ jobs:
 
           # repo uses the manifest branch for the full build environment. The
           # exact GKI release is a separate tag in kernel/common.
-          git -C common fetch --depth=1 origin \
+          git -C common fetch --depth=1 \
+            https://android.googlesource.com/kernel/common \
             "refs/tags/${KERNEL_TAG}:refs/tags/${KERNEL_TAG}"
           TAG_COMMIT="$(git -C common rev-parse "refs/tags/${KERNEL_TAG}^{commit}")"
           git -C common checkout --detach "$TAG_COMMIT"
