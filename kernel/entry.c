@@ -38,6 +38,7 @@ static long dispatch_ioctl(struct file *file, unsigned int cmd,
 	struct CopyMemory cm;
 	struct ModuleBase mb;
 	struct TouchCommand touch;
+	struct TouchBounds bounds;
 	char name[0x100] = { 0 };
 
 	switch (cmd) {
@@ -72,6 +73,12 @@ static long dispatch_ioctl(struct file *file, unsigned int cmd,
 			return -EFAULT;
 
 		return touch_input_event(&touch);
+
+	case OP_TOUCH_BOUNDS:
+		if (copy_from_user(&bounds, (void __user *)arg, sizeof(bounds)))
+			return -EFAULT;
+
+		return touch_set_bounds(&bounds);
 
 	default:
 		return -ENOTTY;
