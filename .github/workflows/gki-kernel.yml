@@ -27,6 +27,10 @@ on:
         description: >
           Exact release tag in kernel/common,
           for example: android15-6.6-2025-06_r23
+      kernel_sha:
+        required: true
+        type: string
+        description: Exact common-kernel commit from the GKI release listing
       os_patch_level:
         required: false
         type: string
@@ -99,6 +103,7 @@ jobs:
         env:
           MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
           KERNEL_TAG: ${{ inputs.kernel_tag }}
+          KERNEL_SHA: ${{ inputs.kernel_sha }}
         run: |
           set -euo pipefail
           echo "Free space:"
@@ -129,6 +134,7 @@ jobs:
           TAG_COMMIT="$(git -C common rev-parse "refs/tags/${KERNEL_TAG}^{commit}")"
           git -C common checkout --detach "$TAG_COMMIT"
           test "$(git -C common rev-parse HEAD)" = "$TAG_COMMIT"
+          test "$TAG_COMMIT" = "$KERNEL_SHA"
           echo "Manifest branch: ${MANIFEST_BRANCH}"
           echo "Kernel tag: ${KERNEL_TAG} (${TAG_COMMIT})"
           df -h
@@ -167,49 +173,30 @@ jobs:
           max-size: 2G
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
-      - name: Setup for LKM
+      - name: Set up LKM without bypassing export checks
         if: ${{ inputs.build_lkm == true }}
         working-directory: android-kernel
         run: |
-          pip install ast-grep-cli
-          sudo apt-get install llvm-15 -y
-          ast-grep -U -p '$$$ check_exports($$$) {$$$}' -r '' common/scripts/mod/modpost.c
-          ast-grep -U -p 'check_exports($$$);' -r '' common/scripts/mod/modpost.c
+          set -euo pipefail
           sed -i 's/default y/default m/' common/drivers/memkernel/Kconfig
           echo "drivers/memkernel/miprotect.ko" >> common/android/gki_aarch64_modules
 
-          # bazel build, android14-5.15, android14-6.1 use bazel
-          if [ ! -e build/build.sh ]; then
-            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
-            if [ -e common/modules.bzl ]; then
-              sed -i 's/_COMMON_GKI_MODULES_LIST = \[/_COMMON_GKI_MODULES_LIST = \[ "drivers\/memkernel\/miprotect.ko",/g' common/modules.bzl
-              cat common/modules.bzl | grep "miprotect"
-            fi
-          else
-            TARGET_FILE="build/kernel/build.sh"
-            if [ ! -e "$TARGET_FILE" ]; then
-              TARGET_FILE="build/build.sh"
-            fi
-            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' $TARGET_FILE || echo "No unknown symbol in $TARGET_FILE"
-            sed -i 's/if ! diff -u "\${KERNEL_DIR}\/\${MODULES_ORDER}" "\${OUT_DIR}\/modules\.order"; then/if false; then/g' $TARGET_FILE
-            sed -i 's@${ROOT_DIR}/build/abi/compare_to_symbol_list@echo@g' $TARGET_FILE
-            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
+          # Preserve modpost and GKI KMI checks. A module with unavailable
+          # symbols must fail rather than being published as loadable.
+          if [ ! -e build/build.sh ] && [ -e common/modules.bzl ]; then
+            sed -i 's/_COMMON_GKI_MODULES_LIST = \[/_COMMON_GKI_MODULES_LIST = \[ "drivers\/memkernel\/miprotect.ko",/g' common/modules.bzl
+            grep -q 'drivers/memkernel/miprotect.ko' common/modules.bzl
           fi
 
-      - name: Make working directory clean to avoid dirty
+      - name: Commit kernel integration for stamped builds
         working-directory: android-kernel
         run: |
-          # Legacy build.sh kernels tolerate removing these lists to bypass ABI
-          # export checks. Bazel declares them as source inputs, so deleting them
-          # makes //common:kernel_aarch64 fail before compilation starts.
-          if [ -e build/build.sh ]; then
-            rm common/android/abi_gki_protected_exports_* || echo "No protected exports!"
-          else
-            echo "Keeping protected exports lists required by Bazel"
-          fi
+          set -euo pipefail
           git config --global user.email "bot@kernelsu.org"
           git config --global user.name "KernelSUBot"
-          cd common/ && git add -A && git commit -a -m "Add MemKernel"
+          cd common/
+          git add -A
+          git commit -m "Add MemKernel"
           repo status
 
       - name: Build Kernel/LKM
@@ -233,9 +220,20 @@ jobs:
             OUTDIR=android-kernel/dist
           fi
           mkdir output
-          if [ "${{ inputs.build_lkm}}" = "true" ]; then 
-            llvm-strip-15 -d $OUTDIR/miprotect.ko
-            mv $OUTDIR/miprotect.ko ./output/${{ inputs.version }}_miprotect.ko
+          if [ "${{ inputs.build_lkm}}" = "true" ]; then
+            test -s "$OUTDIR/miprotect.ko"
+            llvm-strip-15 -d "$OUTDIR/miprotect.ko"
+            module="./output/${{ inputs.version }}_miprotect.ko"
+            mv "$OUTDIR/miprotect.ko" "$module"
+            vermagic="$(modinfo -F vermagic "$module")"
+            expected="${{ inputs.version_name }}"
+            expected="${expected#*-}"
+            case "$vermagic" in "$expected"*) ;; *) echo "Unexpected vermagic: $vermagic"; exit 1 ;; esac
+            printf '%s\n' "$vermagic" > ./output/vermagic.txt
+            sha256sum "$module" > ./output/miprotect.ko.sha256
+            printf 'tag=%s\ncommit=%s\nvermagic=%s\n' \
+              '${{ inputs.kernel_tag }}' '${{ inputs.kernel_sha }}' "$vermagic" \
+              > ./output/build-info.txt
           else
             cp $OUTDIR/Image ./output/
             cp $OUTDIR/Image.lz4 ./output/
@@ -263,5 +261,6 @@ jobs:
         if: ${{ inputs.build_lkm == true }}
         with:
           name: ${{ inputs.version }}-lkm
-          path: ./output/*miprotect.ko
+          if-no-files-found: error
+          path: ./output/*
 
