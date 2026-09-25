@@ -1,16 +1,6 @@
 name: Build Evolution X Marble LKM
 
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - ".github/workflows/build-lkm-evolution-x.yml"
-      - "kernel/**"
-  pull_request:
-    branches: ["main"]
-    paths:
-      - ".github/workflows/build-lkm-evolution-x.yml"
-      - "kernel/**"
   workflow_dispatch:
 
 permissions:
