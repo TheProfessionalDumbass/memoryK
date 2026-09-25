@@ -6,5 +6,6 @@
 int touch_input_init(void);
 void touch_input_exit(void);
 int touch_input_event(const struct TouchCommand *command);
+int touch_set_bounds(const struct TouchBounds *bounds);
 
 #endif
