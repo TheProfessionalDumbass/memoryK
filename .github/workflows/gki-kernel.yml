@@ -154,6 +154,12 @@ jobs:
             # External modules do not modify kernel/common. Kleaf stamps the
             # original, pinned GKI commit and Kbuild runs normal modpost.
             cp -a "$GITHUB_WORKSPACE/MemKernel/kernel" "$GKI_ROOT/memkernel"
+            # Kleaf's external-module rule invokes make in this directory.
+            # The repository's standalone Makefile requires KDIR and would
+            # intercept that invocation; Kbuild is the module build recipe.
+            test -f "$GKI_ROOT/memkernel/Kbuild"
+            test -f "$GKI_ROOT/memkernel/Makefile"
+            rm -- "$GKI_ROOT/memkernel/Makefile"
             test "$(git -C common rev-parse HEAD)" = '${{ inputs.kernel_sha }}'
             test -z "$(git -C common status --porcelain)"
           else
