@@ -181,14 +181,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends llvm-15 kmod
           sed -i 's/default y/default m/' common/drivers/memkernel/Kconfig
-          echo "drivers/memkernel/miprotect.ko" >> common/android/gki_aarch64_modules
 
-          # Preserve modpost and GKI KMI checks. A module with unavailable
-          # symbols must fail rather than being published as loadable.
-          if [ ! -e build/build.sh ] && [ -e common/modules.bzl ]; then
-            sed -i 's/_COMMON_GKI_MODULES_LIST = \[/_COMMON_GKI_MODULES_LIST = \[ "drivers\/memkernel\/miprotect.ko",/g' common/modules.bzl
-            grep -q 'drivers/memkernel/miprotect.ko' common/modules.bzl
+          # The module-list location changed across GKI generations. Select
+          # the one in this pinned tree and fail on any unrecognized layout.
+          module_path='drivers/memkernel/miprotect.ko'
+          if [ -f common/android/gki_aarch64_modules ]; then
+            grep -qxF "$module_path" common/android/gki_aarch64_modules ||
+              echo "$module_path" >> common/android/gki_aarch64_modules
+          elif [ -f common/modules.bzl ] &&
+               grep -q '^_COMMON_GKI_MODULES_LIST = \[' common/modules.bzl; then
+            sed -i "/^_COMMON_GKI_MODULES_LIST = \[/a\\    \"$module_path\"," common/modules.bzl
+          elif [ -f common/bazel/modules_private.bzl ] &&
+               grep -q '^_COMMON_GKI_MODULES_LIST = \[' common/bazel/modules_private.bzl; then
+            sed -i "/^_COMMON_GKI_MODULES_LIST = \[/a\\    \"$module_path\"," common/bazel/modules_private.bzl
+          else
+            echo "::error::Unsupported GKI module-list layout"
+            exit 1
           fi
+
+          # Keep modpost and GKI export checks enabled. No loadable artifact
+          # is published if the selected kernel cannot resolve this module.
 
       - name: Commit kernel integration for stamped builds
         working-directory: android-kernel
