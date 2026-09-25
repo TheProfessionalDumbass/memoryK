@@ -143,20 +143,26 @@ jobs:
         env:
           PATCH_PATH: ${{ inputs.patch_path }}
           IS_DEBUG_KERNEL: ${{ inputs.debug }}
+          BUILD_LKM: ${{ inputs.build_lkm }}
         run: |
+          set -euo pipefail
           cd $GITHUB_WORKSPACE/android-kernel
           echo "[+] MemKernel setup"
           GKI_ROOT=$(pwd)
           echo "[+] GKI_ROOT: $GKI_ROOT"
-          echo "[+] Copy MemKernel driver to $GKI_ROOT/common/drivers"
-          cp -a "$GITHUB_WORKSPACE/MemKernel/kernel" "$GKI_ROOT/common/drivers/memkernel"
-          echo "[+] Add MemKernel driver to Makefile"
-          DRIVER_MAKEFILE=$GKI_ROOT/common/drivers/Makefile
-          DRIVER_KCONFIG=$GKI_ROOT/common/drivers/Kconfig
-          grep -q "memkernel" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_MEMKERNEL) += memkernel/\n" >> "$DRIVER_MAKEFILE"
-          grep -q "memkernel" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/memkernel/Kconfig\"" "$DRIVER_KCONFIG"
-          echo "[+] Apply MemKernel patches"
-          # cd $GKI_ROOT/common/ && git apply $GITHUB_WORKSPACE/MemKernel/.github/patches/$PATCH_PATH/*.patch || echo "[-] No patch found"
+          if [ "$BUILD_LKM" = "true" ]; then
+            # External modules do not modify kernel/common. Kleaf stamps the
+            # original, pinned GKI commit and Kbuild runs normal modpost.
+            cp -a "$GITHUB_WORKSPACE/MemKernel/kernel" "$GKI_ROOT/memkernel"
+            test "$(git -C common rev-parse HEAD)" = '${{ inputs.kernel_sha }}'
+            test -z "$(git -C common status --porcelain)"
+          else
+            cp -a "$GITHUB_WORKSPACE/MemKernel/kernel" "$GKI_ROOT/common/drivers/memkernel"
+            DRIVER_MAKEFILE=$GKI_ROOT/common/drivers/Makefile
+            DRIVER_KCONFIG=$GKI_ROOT/common/drivers/Kconfig
+            grep -q "memkernel" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_MEMKERNEL) += memkernel/\n" >> "$DRIVER_MAKEFILE"
+            grep -q "memkernel" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/memkernel/Kconfig\"" "$DRIVER_KCONFIG"
+          fi
 
           if [ "$IS_DEBUG_KERNEL" = "true" ]; then
             echo "[+] Enable debug features for kernel"
@@ -180,29 +186,12 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends llvm-15 kmod
-          sed -i 's/default y/default m/' common/drivers/memkernel/Kconfig
-
-          # The module-list location changed across GKI generations. Select
-          # the one in this pinned tree and fail on any unrecognized layout.
-          module_path='drivers/memkernel/miprotect.ko'
-          if [ -f common/android/gki_aarch64_modules ]; then
-            grep -qxF "$module_path" common/android/gki_aarch64_modules ||
-              echo "$module_path" >> common/android/gki_aarch64_modules
-          elif [ -f common/modules.bzl ] &&
-               grep -q '^_COMMON_GKI_MODULES_LIST = \[' common/modules.bzl; then
-            sed -i "/^_COMMON_GKI_MODULES_LIST = \[/a\\    \"$module_path\"," common/modules.bzl
-          elif [ -f common/bazel/modules_private.bzl ] &&
-               grep -q '^_COMMON_GKI_MODULES_LIST = \[' common/bazel/modules_private.bzl; then
-            sed -i "/^_COMMON_GKI_MODULES_LIST = \[/a\\    \"$module_path\"," common/bazel/modules_private.bzl
-          else
-            echo "::error::Unsupported GKI module-list layout"
-            exit 1
-          fi
-
-          # Keep modpost and GKI export checks enabled. No loadable artifact
-          # is published if the selected kernel cannot resolve this module.
+          test -f memkernel/Kbuild
+          test -f memkernel/BUILD.bazel
+          test -z "$(git -C common status --porcelain)"
 
       - name: Commit kernel integration for stamped builds
+        if: ${{ inputs.build_lkm == false }}
         working-directory: android-kernel
         run: |
           set -euo pipefail
@@ -217,7 +206,20 @@ jobs:
         working-directory: android-kernel
         run: |
           set -euo pipefail
-          if [ -e build/build.sh ]; then
+          if [ "${{ inputs.build_lkm }}" = "true" ]; then
+            if [ -e build/build.sh ]; then
+              EXT_MODULES=memkernel LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
+              module="$(find out -type f -name miprotect.ko -print -quit)"
+            else
+              tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //memkernel:miprotect
+              module="$(find -L bazel-bin/memkernel -type f -name miprotect.ko -print -quit)"
+            fi
+            test -n "$module"
+            test -s "$module"
+            mkdir -p dist
+            cp "$module" dist/miprotect.ko
+            test -z "$(git -C common status --porcelain)"
+          elif [ -e build/build.sh ]; then
             LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
           else
             tools/bazel run --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //common:kernel_aarch64_dist -- --dist_dir=dist
@@ -240,6 +242,9 @@ jobs:
             expected="${{ inputs.version_name }}"
             expected="${expected#*-}"
             case "$vermagic" in "$expected"*) ;; *) echo "Unexpected vermagic: $vermagic"; exit 1 ;; esac
+            expected_scm="g$(printf '%s' '${{ inputs.kernel_sha }}' | cut -c1-12)"
+            case "$vermagic" in *"$expected_scm"*) ;; *) echo "::error::Module SCM version is not the pinned GKI commit: $vermagic"; exit 1 ;; esac
+            case "$vermagic" in *-dirty*) echo "::error::Dirty kernel version: $vermagic"; exit 1 ;; esac
             printf '%s\n' "$vermagic" > ./output/vermagic.txt
             sha256sum "$module" > ./output/miprotect.ko.sha256
             printf 'tag=%s\ncommit=%s\nvermagic=%s\n' \
@@ -274,4 +279,5 @@ jobs:
           name: ${{ inputs.version }}-lkm
           if-no-files-found: error
           path: ./output/*
+
 
