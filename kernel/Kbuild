@@ -1,0 +1,3 @@
+obj-m := miprotect.o
+miprotect-y := memory.o process.o entry.o input_hook.o
+
