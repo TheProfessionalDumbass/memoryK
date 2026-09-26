@@ -212,7 +212,16 @@ jobs:
               EXT_MODULES=memkernel LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
               module="$(find out -type f -name miprotect.ko -print -quit)"
             else
-              tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=release --lto=thin //memkernel:miprotect
+              if [ '${{ inputs.kernel_tag }}' = 'android16-6.12-2026-06_r29' ]; then
+                # The exact release's certified CI build (AOSP kernel_bid
+                # 16385436) includes rust_binder.ko, which this tag's GKI
+                # module list requires. Build only this external driver
+                # against that release prebuilt; keep modpost/KMI checks on.
+                sed -i 's|//common:kernel_aarch64|//common:kernel_aarch64_download_or_build|' memkernel/BUILD.bazel
+                tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=release --use_prebuilt_gki=16385436 //memkernel:miprotect
+              else
+                tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=release --lto=thin //memkernel:miprotect
+              fi
               module="$(find -L bazel-bin/memkernel -type f -name miprotect.ko -print -quit)"
             fi
             test -n "$module"
