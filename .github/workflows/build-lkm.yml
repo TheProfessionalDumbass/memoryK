@@ -1,100 +1,85 @@
-name: Build GKI LKM
+name: Build latest GKI LKMs (sequential)
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - ".github/workflows/build-lkm.yml"
-      - ".github/workflows/gki-kernel.yml"
-      - "kernel/**"
-
+      - kernel/**
+      - .github/workflows/build-lkm.yml
+      - .github/workflows/gki-kernel.yml
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - ".github/workflows/build-lkm.yml"
-      - ".github/workflows/gki-kernel.yml"
-      - "kernel/**"
-
+      - kernel/**
+      - .github/workflows/build-lkm.yml
+      - .github/workflows/gki-kernel.yml
   workflow_dispatch:
-    inputs:
-      version:
-        description: "GKI branch/version (example: android15-6.6)"
-        required: true
-        default: "android15-6.6"
-        type: string
 
-      sub_level:
-        description: "Linux sublevel (example: 89 = Linux 6.6.89)"
-        required: true
-        default: "89"
-        type: string
-
-      os_patch_level:
-        description: "GKI patch level (example: 2025-06)"
-        required: true
-        default: "2025-06"
-        type: string
-
-      release:
-        description: "Google GKI release number (example: 23 for _r23)"
-        required: true
-        default: "23"
-        type: string
+permissions:
+  contents: read
 
 jobs:
   build-lkm:
+    name: ${{ matrix.version_name }} (${{ matrix.kernel_tag }})
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - version: android17-6.18
+            version_name: android17-6.18.32
+            manifest_branch: common-android17-6.18-2026-09
+            kernel_tag: android17-6.18-2026-09_r4
+            kernel_sha: 48c06f3a0659b46467700ba6b9921a1943438136
+            os_patch_level: 2026-09
+          - version: android16-6.12
+            version_name: android16-6.12.81
+            manifest_branch: common-android16-6.12-2026-06
+            kernel_tag: android16-6.12-2026-06_r29
+            kernel_sha: 5a474838a54e500b095dd71cf910980436b16e9a
+            os_patch_level: 2026-06
+          - version: android15-6.6
+            version_name: android15-6.6.139
+            manifest_branch: common-android15-6.6-2026-07
+            kernel_tag: android15-6.6-2026-07_r10
+            kernel_sha: 96b11d8b3a9e8917014a4632ab138428d88540cc
+            os_patch_level: 2026-07
+          - version: android14-6.1
+            version_name: android14-6.1.172
+            manifest_branch: common-android14-6.1-2026-06
+            kernel_tag: android14-6.1-2026-06_r11
+            kernel_sha: 178dde21c3a9229e25b53f0aee2da17ac436025b
+            os_patch_level: 2026-06
+          - version: android14-5.15
+            version_name: android14-5.15.208
+            manifest_branch: common-android14-5.15-2026-07
+            kernel_tag: android14-5.15-2026-07_r2
+            kernel_sha: 94fbb8c6595740927376fc346c53e9c8868067dd
+            os_patch_level: 2026-07
+          - version: android13-5.15
+            version_name: android13-5.15.211
+            manifest_branch: common-android13-5.15-2026-09
+            kernel_tag: android13-5.15-2026-09_r1
+            kernel_sha: 0b6028f1f30da3c2143bb40eee912c4974108e5c
+            os_patch_level: 2026-09
+          - version: android13-5.10
+            version_name: android13-5.10.257
+            manifest_branch: common-android13-5.10-2026-07
+            kernel_tag: android13-5.10-2026-07_r2
+            kernel_sha: 3956c7f9d32710322a8018b18ee9a3f5090647f4
+            os_patch_level: 2026-07
+          - version: android12-5.10
+            version_name: android12-5.10.257
+            manifest_branch: common-android12-5.10-2026-07
+            kernel_tag: android12-5.10-2026-07_r1
+            kernel_sha: b14525331e0d5d335b037d6ed17d40424ed47b0a
+            os_patch_level: 2026-07
     uses: ./.github/workflows/gki-kernel.yml
-
     with:
-      # Manual Run workflow values, otherwise use defaults
-      version: >-
-        ${{ github.event_name == 'workflow_dispatch'
-            && inputs.version
-            || 'android15-6.6' }}
-
-      version_name: >-
-        ${{ format(
-            '{0}.{1}',
-            github.event_name == 'workflow_dispatch'
-              && inputs.version
-              || 'android15-6.6',
-            github.event_name == 'workflow_dispatch'
-              && inputs.sub_level
-              || '89'
-        ) }}
-
-      # The manifest branch and the kernel/common release tag are different refs.
-      manifest_branch: >-
-        ${{ format(
-            'common-{0}-{1}',
-            github.event_name == 'workflow_dispatch'
-              && inputs.version
-              || 'android15-6.6',
-            github.event_name == 'workflow_dispatch'
-              && inputs.os_patch_level
-              || '2025-06'
-        ) }}
-
-      kernel_tag: >-
-        ${{ format(
-            '{0}-{1}_r{2}',
-            github.event_name == 'workflow_dispatch'
-              && inputs.version
-              || 'android15-6.6',
-            github.event_name == 'workflow_dispatch'
-              && inputs.os_patch_level
-              || '2025-06',
-            github.event_name == 'workflow_dispatch'
-              && inputs.release
-              || '23'
-        ) }}
-
-      os_patch_level: >-
-        ${{ github.event_name == 'workflow_dispatch'
-            && inputs.os_patch_level
-            || '2025-06' }}
-
+      version: ${{ matrix.version }}
+      version_name: ${{ matrix.version_name }}
+      manifest_branch: ${{ matrix.manifest_branch }}
+      kernel_tag: ${{ matrix.kernel_tag }}
+      kernel_sha: ${{ matrix.kernel_sha }}
+      os_patch_level: ${{ matrix.os_patch_level }}
       build_lkm: true
-

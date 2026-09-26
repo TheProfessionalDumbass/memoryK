@@ -10,7 +10,7 @@
 class MemKDriver {
 private:
 	int fd;
-	pid_t pid;
+	pid_t pid = 0;
 
 	struct CopyMemory
 	{
@@ -35,6 +35,12 @@ private:
 		int32_t y;
 	};
 
+	struct TouchBounds
+	{
+		uint32_t width;
+		uint32_t height;
+	};
+
 	enum TouchAction {
 		TOUCH_ACTION_DOWN = 0,
 		TOUCH_ACTION_MOVE = 1,
@@ -47,6 +53,7 @@ private:
 		OP_WRITE_MEM = 0x802,
 		OP_MODULE_BASE = 0x803,
 		OP_TOUCH_EVENT = 0x804,
+		OP_TOUCH_BOUNDS = 0x805,
 	};
 
 	inline bool send_touch(const TouchAction action, const int slot,
@@ -67,7 +74,7 @@ public:
 	}
 
 	~MemKDriver() {
-		if (fd > 0) {
+		if (fd >= 0) {
 			close(fd);
 		}
 	}
@@ -109,6 +116,15 @@ public:
 		mb.name = const_cast<char *>(name);
 
 		return (ioctl(fd, OP_MODULE_BASE, &mb) == 0) ? mb.base : 0;
+	}
+
+	// Call after reading the current display size, and again after rotation.
+	// This cancels any active contacts before changing coordinate bounds.
+	inline bool set_touch_bounds(const uint32_t width,
+				     const uint32_t height) const {
+		if (fd == -1) return false;
+		TouchBounds bounds = { width, height };
+		return ioctl(fd, OP_TOUCH_BOUNDS, &bounds) == 0;
 	}
 
 	inline bool touch_down(const int x, const int y,

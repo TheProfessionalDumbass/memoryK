@@ -27,6 +27,10 @@ on:
         description: >
           Exact release tag in kernel/common,
           for example: android15-6.6-2025-06_r23
+      kernel_sha:
+        required: true
+        type: string
+        description: Exact common-kernel commit from the GKI release listing
       os_patch_level:
         required: false
         type: string
@@ -99,6 +103,7 @@ jobs:
         env:
           MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
           KERNEL_TAG: ${{ inputs.kernel_tag }}
+          KERNEL_SHA: ${{ inputs.kernel_sha }}
         run: |
           set -euo pipefail
           echo "Free space:"
@@ -129,6 +134,7 @@ jobs:
           TAG_COMMIT="$(git -C common rev-parse "refs/tags/${KERNEL_TAG}^{commit}")"
           git -C common checkout --detach "$TAG_COMMIT"
           test "$(git -C common rev-parse HEAD)" = "$TAG_COMMIT"
+          test "$TAG_COMMIT" = "$KERNEL_SHA"
           echo "Manifest branch: ${MANIFEST_BRANCH}"
           echo "Kernel tag: ${KERNEL_TAG} (${TAG_COMMIT})"
           df -h
@@ -137,20 +143,27 @@ jobs:
         env:
           PATCH_PATH: ${{ inputs.patch_path }}
           IS_DEBUG_KERNEL: ${{ inputs.debug }}
+          BUILD_LKM: ${{ inputs.build_lkm }}
         run: |
+          set -euo pipefail
           cd $GITHUB_WORKSPACE/android-kernel
           echo "[+] MemKernel setup"
           GKI_ROOT=$(pwd)
           echo "[+] GKI_ROOT: $GKI_ROOT"
-          echo "[+] Copy MemKernel driver to $GKI_ROOT/common/drivers"
-          ln -sf $GITHUB_WORKSPACE/MemKernel/kernel $GKI_ROOT/common/drivers/memkernel
-          echo "[+] Add MemKernel driver to Makefile"
-          DRIVER_MAKEFILE=$GKI_ROOT/common/drivers/Makefile
-          DRIVER_KCONFIG=$GKI_ROOT/common/drivers/Kconfig
-          grep -q "memkernel" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_MEMKERNEL) += memkernel/\n" >> "$DRIVER_MAKEFILE"
-          grep -q "memkernel" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/memkernel/Kconfig\"" "$DRIVER_KCONFIG"
-          echo "[+] Apply MemKernel patches"
-          # cd $GKI_ROOT/common/ && git apply $GITHUB_WORKSPACE/MemKernel/.github/patches/$PATCH_PATH/*.patch || echo "[-] No patch found"
+          if [ "$BUILD_LKM" = "true" ]; then
+            # External modules do not modify kernel/common. Kleaf stamps the
+            # original, pinned GKI commit and Kbuild runs normal modpost.
+            cp -a "$GITHUB_WORKSPACE/MemKernel/kernel" "$GKI_ROOT/memkernel"
+            test -f "$GKI_ROOT/memkernel/Makefile"
+            test "$(git -C common rev-parse HEAD)" = '${{ inputs.kernel_sha }}'
+            test -z "$(git -C common status --porcelain)"
+          else
+            cp -a "$GITHUB_WORKSPACE/MemKernel/kernel" "$GKI_ROOT/common/drivers/memkernel"
+            DRIVER_MAKEFILE=$GKI_ROOT/common/drivers/Makefile
+            DRIVER_KCONFIG=$GKI_ROOT/common/drivers/Kconfig
+            grep -q "memkernel" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_MEMKERNEL) += memkernel/\n" >> "$DRIVER_MAKEFILE"
+            grep -q "memkernel" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/memkernel/Kconfig\"" "$DRIVER_KCONFIG"
+          fi
 
           if [ "$IS_DEBUG_KERNEL" = "true" ]; then
             echo "[+] Enable debug features for kernel"
@@ -167,59 +180,78 @@ jobs:
           max-size: 2G
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
-      - name: Setup for LKM
+      - name: Set up LKM without bypassing export checks
         if: ${{ inputs.build_lkm == true }}
         working-directory: android-kernel
         run: |
-          pip install ast-grep-cli
-          sudo apt-get install llvm-15 -y
-          ast-grep -U -p '$$$ check_exports($$$) {$$$}' -r '' common/scripts/mod/modpost.c
-          ast-grep -U -p 'check_exports($$$);' -r '' common/scripts/mod/modpost.c
-          sed -i 's/default y/default m/' common/drivers/memkernel/Kconfig
-          echo "drivers/memkernel/miprotect.ko" >> common/android/gki_aarch64_modules
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm-15 kmod
+          test -f memkernel/Makefile
+          test -f memkernel/BUILD.bazel
+          test -z "$(git -C common status --porcelain)"
 
-          # bazel build, android14-5.15, android14-6.1 use bazel
-          if [ ! -e build/build.sh ]; then
-            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
-            if [ -e common/modules.bzl ]; then
-              sed -i 's/_COMMON_GKI_MODULES_LIST = \[/_COMMON_GKI_MODULES_LIST = \[ "drivers\/memkernel\/miprotect.ko",/g' common/modules.bzl
-              cat common/modules.bzl | grep "miprotect"
-            fi
-          else
-            TARGET_FILE="build/kernel/build.sh"
-            if [ ! -e "$TARGET_FILE" ]; then
-              TARGET_FILE="build/build.sh"
-            fi
-            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' $TARGET_FILE || echo "No unknown symbol in $TARGET_FILE"
-            sed -i 's/if ! diff -u "\${KERNEL_DIR}\/\${MODULES_ORDER}" "\${OUT_DIR}\/modules\.order"; then/if false; then/g' $TARGET_FILE
-            sed -i 's@${ROOT_DIR}/build/abi/compare_to_symbol_list@echo@g' $TARGET_FILE
-            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
-          fi
-
-      - name: Make working directory clean to avoid dirty
+      - name: Commit kernel integration for stamped builds
+        if: ${{ inputs.build_lkm == false }}
         working-directory: android-kernel
         run: |
-          # Legacy build.sh kernels tolerate removing these lists to bypass ABI
-          # export checks. Bazel declares them as source inputs, so deleting them
-          # makes //common:kernel_aarch64 fail before compilation starts.
-          if [ -e build/build.sh ]; then
-            rm common/android/abi_gki_protected_exports_* || echo "No protected exports!"
-          else
-            echo "Keeping protected exports lists required by Bazel"
-          fi
+          set -euo pipefail
           git config --global user.email "bot@kernelsu.org"
           git config --global user.name "KernelSUBot"
-          cd common/ && git add -A && git commit -a -m "Add MemKernel"
+          cd common/
+          git add -A
+          git commit -m "Add MemKernel"
           repo status
 
       - name: Build Kernel/LKM
         working-directory: android-kernel
         run: |
-          if [ ! -z ${{ vars.EXPECTED_SIZE }} ] && [ ! -z ${{ vars.EXPECTED_HASH }} ]; then
-            export KSU_EXPECTED_SIZE=${{ vars.EXPECTED_SIZE }}
-            export KSU_EXPECTED_HASH=${{ vars.EXPECTED_HASH }}
-          fi
-          if [ -e build/build.sh ]; then
+          set -euo pipefail
+          if [ "${{ inputs.build_lkm }}" = "true" ]; then
+            if [ -e build/build.sh ]; then
+              EXT_MODULES=memkernel LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
+              module="$(find out -type f -name miprotect.ko -print -quit)"
+            else
+              if [ '${{ inputs.kernel_tag }}' = 'android16-6.12-2026-06_r29' ]; then
+                # This certified CI build includes the release's rust_binder.ko.
+                # Use Kleaf's Bzlmod prebuilt extension and normal modpost/KMI
+                # checks; the legacy --use_prebuilt_gki alias is unavailable.
+                prebuilt_dir="$PWD/prebuilts/gki-android16"
+                PYTHONPATH="$PWD/build/kernel${PYTHONPATH:+:$PYTHONPATH}" \
+                  python3 build/kernel/init/init_ddk.py \
+                    --build_id 16385436 \
+                    --build_target kernel_aarch64 \
+                    --prebuilts_dir "$prebuilt_dir" \
+                    --url_fmt 'https://ci.android.com/builds/submitted/{build_id}/{build_target}/latest/raw/{filename}'
+                test -s "$prebuilt_dir/ci_target_mapping.json"
+                grep -Fq 'kernel_release=6.12.81-android16-6-g5a474838a54e-' "$prebuilt_dir/gki-info.txt"
+                curl -fsSL 'https://ci.android.com/builds/submitted/16385436/kernel_aarch64/latest/raw/BUILD_INFO' -o "$prebuilt_dir/BUILD_INFO"
+                jq -e --arg sha '${{ inputs.kernel_sha }}' '.parsed_manifest.projects[] | select(.path == "common") | .revision == $sha' "$prebuilt_dir/BUILD_INFO"
+                cat >> MODULE.bazel <<'EOF'
+          kernel_prebuilt_ext = use_extension(
+              "//build/kernel/kleaf:kernel_prebuilt_ext.bzl",
+              "kernel_prebuilt_ext",
+          )
+          kernel_prebuilt_ext.declare_kernel_prebuilts(
+              name = "gki_prebuilts",
+              local_artifact_path = "prebuilts/gki-android16",
+              target = "kernel_aarch64",
+          )
+          use_repo(kernel_prebuilt_ext, "gki_prebuilts")
+          EOF
+                sed -i 's|//common:kernel_aarch64|@gki_prebuilts//kernel_aarch64|' memkernel/BUILD.bazel
+                tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=release //memkernel:miprotect
+              else
+                tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=release --lto=thin //memkernel:miprotect
+              fi
+              module="$(find -L bazel-bin/memkernel -type f -name miprotect.ko -print -quit)"
+            fi
+            test -n "$module"
+            test -s "$module"
+            mkdir -p dist
+            cp "$module" dist/miprotect.ko
+            test -z "$(git -C common status --porcelain)"
+          elif [ -e build/build.sh ]; then
             LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
           else
             tools/bazel run --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //common:kernel_aarch64_dist -- --dist_dir=dist
@@ -233,9 +265,43 @@ jobs:
             OUTDIR=android-kernel/dist
           fi
           mkdir output
-          if [ "${{ inputs.build_lkm}}" = "true" ]; then 
-            llvm-strip-15 -d $OUTDIR/miprotect.ko
-            mv $OUTDIR/miprotect.ko ./output/${{ inputs.version }}_miprotect.ko
+          if [ "${{ inputs.build_lkm}}" = "true" ]; then
+            test -s "$OUTDIR/miprotect.ko"
+            llvm-strip-15 -d "$OUTDIR/miprotect.ko"
+            module="./output/${{ inputs.version }}_miprotect.ko"
+            mv "$OUTDIR/miprotect.ko" "$module"
+            vermagic="$(modinfo -F vermagic "$module")"
+            expected="${{ inputs.version_name }}"
+            expected="${expected#*-}"
+            case "$vermagic" in "$expected"*) ;; *) echo "Unexpected vermagic: $vermagic"; exit 1 ;; esac
+            expected_scm="g$(printf '%s' '${{ inputs.kernel_sha }}' | cut -c1-12)"
+            family='${{ inputs.version }}'
+            family="${family%%-*}"
+            release="${vermagic%% *}"
+            case "$release" in "$expected"-"$family"*) ;; *) echo "::error::Wrong GKI release family: $vermagic"; exit 1 ;; esac
+            if [[ "$release" =~ -g[0-9a-fA-F]{12,40} ]] && [[ "$release" != *"$expected_scm"* ]]; then
+              echo "::error::Module embeds a different kernel commit: $vermagic"
+              exit 1
+            fi
+            if [[ "$release" == *"_r"* ]] && [[ "$release" != *'${{ inputs.kernel_tag }}'* ]]; then
+              echo "::error::Module embeds a different release tag: $vermagic"
+              exit 1
+            fi
+            if [[ "$release" == *"$expected_scm"* ]]; then
+              provenance=embedded_commit
+            elif [[ "$release" == *'${{ inputs.kernel_tag }}'* ]]; then
+              provenance=embedded_tag
+            else
+              provenance=pinned_source_checkout
+            fi
+            test "$(git -C android-kernel/common rev-parse HEAD)" = '${{ inputs.kernel_sha }}'
+            test -z "$(git -C android-kernel/common status --porcelain)"
+            case "$vermagic" in *-dirty*) echo "::error::Dirty kernel version: $vermagic"; exit 1 ;; esac
+            printf '%s\n' "$vermagic" > ./output/vermagic.txt
+            sha256sum "$module" > ./output/miprotect.ko.sha256
+            printf 'tag=%s\ncommit=%s\nvermagic=%s\nprovenance=%s\n' \
+              '${{ inputs.kernel_tag }}' '${{ inputs.kernel_sha }}' "$vermagic" "$provenance" \
+              > ./output/build-info.txt
           else
             cp $OUTDIR/Image ./output/
             cp $OUTDIR/Image.lz4 ./output/
@@ -263,5 +329,7 @@ jobs:
         if: ${{ inputs.build_lkm == true }}
         with:
           name: ${{ inputs.version }}-lkm
-          path: ./output/*miprotect.ko
+          if-no-files-found: error
+          path: ./output/*
+
 

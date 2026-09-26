@@ -40,6 +40,7 @@ The supported IOCTL operation IDs are:
 | `OP_WRITE_MEM` | `0x802` | `CopyMemory` | Copy client data into target-process memory |
 | `OP_MODULE_BASE` | `0x803` | `ModuleBase` | Resolve a mapped module's base address |
 | `OP_TOUCH_EVENT` | `0x804` | `TouchCommand` | Submit one virtual-touch update |
+| `OP_TOUCH_BOUNDS` | `0x805` | `TouchBounds` | Set current display width and height in pixels |
 
 ## Process memory access
 
@@ -142,21 +143,27 @@ already-active slot does not silently alter the gesture.
 
 ### Display bounds
 
-The default virtual-touch coordinate range is 1080 by 2400 pixels:
-
-```text
-x: 0..1079
-y: 0..2399
-```
-
-The dimensions are read-only module parameters and can be set when loading the
-module:
+The virtual device advertises a fixed normalized `0..65535` axis to Android.
+The driver converts caller-supplied pixel coordinates using the current display
+bounds, so a resolution change does not require recompiling the `.ko`.
+The initial bounds remain 1080 by 2400 pixels for older clients and can still
+be supplied at module load:
 
 ```sh
 insmod miprotect.ko touch_width=1440 touch_height=3200
 ```
 
-`DOWN` and `MOVE` coordinates outside the configured bounds return an error.
+New clients should set the actual dimensions after opening the device, and
+again after rotation or a display-size change:
+
+```cpp
+driver->set_touch_bounds(display_width, display_height);
+```
+
+Changing bounds cancels active virtual contacts. Valid dimensions are 2..16384
+pixels per axis; `DOWN` and `MOVE` outside those bounds return `-ERANGE`.
+A user-space app must obtain the dimensions of its target display; the kernel
+module cannot infer every device's display orientation reliably.
 
 ### Tap or click
 
@@ -242,8 +249,12 @@ device, and removes `/dev/miprotect`.
 ## Kernel compatibility
 
 The code includes compatibility paths for memory-map locking before and after
-Linux 5.8, and for VMA iteration before and after Linux 6.1. The current GitHub
-Actions LKM target is Android 12 GKI `5.10.257` with the `2026-07` patch level.
+Linux 5.8, and for VMA iteration before and after Linux 6.1. The GKI workflow pins one dated Google release tag and common-kernel commit
+per Android/LTS branch. It runs the eight selected builds with `max-parallel: 1`
+and leaves kernel symbol/KMI checks enabled. A `.ko` is **not universal across
+kernels or devices**: matching KMI, configuration, vermagic, exported symbols,
+and any OEM restrictions must be verified on each target. A failed branch must
+not be treated as a usable artifact.
 
 ## Build automation
 
@@ -254,8 +265,8 @@ The `Build LKM` workflow runs when:
 - the workflow file itself changes; or
 - it is started manually with `workflow_dispatch`.
 
-The verified build produces the artifact `android12-5.10-lkm`, containing
-`android12-5.10_miprotect.ko`.
+Each successful branch uploads a separately named `.ko`, its SHA-256,
+vermagic, and the exact release tag/commit. Builds are queued one at a time.
 
 ## Repository layout
 

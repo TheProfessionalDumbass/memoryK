@@ -11,6 +11,7 @@
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/module.h>
+#include <linux/math64.h>
 #include <linux/mutex.h>
 #include <linux/string.h>
 
@@ -19,6 +20,8 @@
 #define MEMK_TOUCH_MAX_SLOTS 10
 #define MEMK_DEFAULT_WIDTH 1080
 #define MEMK_DEFAULT_HEIGHT 2400
+#define MEMK_TOUCH_AXIS_MAX 65535
+#define MEMK_TOUCH_MAX_DIMENSION 16384
 
 static int touch_width = MEMK_DEFAULT_WIDTH;
 module_param(touch_width, int, 0444);
@@ -39,6 +42,12 @@ static bool touch_coordinates_valid(const struct TouchCommand *command)
 	       command->x < touch_width && command->y < touch_height;
 }
 
+static int touch_scale_coordinate(int value, int dimension)
+{
+	return (int)div_u64((u64)value * (MEMK_TOUCH_AXIS_MAX + 1ULL),
+			    dimension);
+}
+
 static void touch_report_contact(struct input_dev *device, int slot,
 				 bool active, int x, int y)
 {
@@ -46,8 +55,10 @@ static void touch_report_contact(struct input_dev *device, int slot,
 	input_mt_report_slot_state(device, MT_TOOL_FINGER, active);
 
 	if (active) {
-		input_report_abs(device, ABS_MT_POSITION_X, x);
-		input_report_abs(device, ABS_MT_POSITION_Y, y);
+		input_report_abs(device, ABS_MT_POSITION_X,
+				 touch_scale_coordinate(x, touch_width));
+		input_report_abs(device, ABS_MT_POSITION_Y,
+				 touch_scale_coordinate(y, touch_height));
 	}
 }
 
@@ -76,6 +87,26 @@ static void touch_cancel_all_locked(void)
 	touch_finish_frame(touch_device);
 }
 
+int touch_set_bounds(const struct TouchBounds *bounds)
+{
+	if (!bounds || bounds->width < 2 || bounds->height < 2 ||
+	    bounds->width > MEMK_TOUCH_MAX_DIMENSION ||
+	    bounds->height > MEMK_TOUCH_MAX_DIMENSION)
+		return -EINVAL;
+
+	mutex_lock(&touch_lock);
+	if (!touch_device) {
+		mutex_unlock(&touch_lock);
+		return -ENODEV;
+	}
+	/* Coordinates from an old orientation must not continue as contacts. */
+	touch_cancel_all_locked();
+	touch_width = bounds->width;
+	touch_height = bounds->height;
+	mutex_unlock(&touch_lock);
+	return 0;
+}
+
 int touch_input_event(const struct TouchCommand *command)
 {
 	int ret = 0;
@@ -96,14 +127,16 @@ int touch_input_event(const struct TouchCommand *command)
 	if (command->slot < 0 || command->slot >= MEMK_TOUCH_MAX_SLOTS)
 		return -EINVAL;
 
-	if (command->action != TOUCH_ACTION_UP &&
-	    !touch_coordinates_valid(command))
-		return -ERANGE;
-
 	mutex_lock(&touch_lock);
 
 	if (!touch_device) {
 		ret = -ENODEV;
+		goto out;
+	}
+	if ((command->action == TOUCH_ACTION_DOWN ||
+	     command->action == TOUCH_ACTION_MOVE) &&
+	    !touch_coordinates_valid(command)) {
+		ret = -ERANGE;
 		goto out;
 	}
 
@@ -159,7 +192,9 @@ int touch_input_init(void)
 	struct input_dev *device;
 	int ret;
 
-	if (touch_width <= 0 || touch_height <= 0)
+	if (touch_width <= 1 || touch_height <= 1 ||
+	    touch_width > MEMK_TOUCH_MAX_DIMENSION ||
+	    touch_height > MEMK_TOUCH_MAX_DIMENSION)
 		return -EINVAL;
 
 	device = input_allocate_device();
@@ -174,9 +209,9 @@ int touch_input_init(void)
 	device->id.version = 0x0100;
 
 	input_set_abs_params(device, ABS_MT_POSITION_X, 0,
-			     touch_width - 1, 0, 0);
+			     MEMK_TOUCH_AXIS_MAX, 0, 0);
 	input_set_abs_params(device, ABS_MT_POSITION_Y, 0,
-			     touch_height - 1, 0, 0);
+			     MEMK_TOUCH_AXIS_MAX, 0, 0);
 
 	ret = input_mt_init_slots(device, MEMK_TOUCH_MAX_SLOTS,
 				  INPUT_MT_DIRECT);

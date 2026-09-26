@@ -34,11 +34,18 @@ struct TouchCommand {
 	__s32 y;
 };
 
+/* Pixel dimensions of the current display orientation. */
+struct TouchBounds {
+	__u32 width;
+	__u32 height;
+};
+
 enum Operations {
 	OP_READ_MEM = 0x801,
 	OP_WRITE_MEM = 0x802,
 	OP_MODULE_BASE = 0x803,
 	OP_TOUCH_EVENT = 0x804,
+	OP_TOUCH_BOUNDS = 0x805,
 };
 
 #endif
