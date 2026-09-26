@@ -5,7 +5,7 @@ kernel_module(
     srcs = glob([
         "**/*.c",
         "**/*.h",
-        "Kbuild",
+        "Makefile",
     ]),
     outs = ["miprotect.ko"],
     kernel_build = "//common:kernel_aarch64",
