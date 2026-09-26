@@ -1,6 +1,12 @@
 name: Build latest GKI LKMs (sequential)
 
 on:
+  push:
+    branches: [main]
+    paths: ["kernel/**", ".github/workflows/build-lkm.yml", ".github/workflows/gki-kernel.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["kernel/**", ".github/workflows/build-lkm.yml", ".github/workflows/gki-kernel.yml"]
   workflow_dispatch:
 
 permissions:
