@@ -74,7 +74,20 @@ static phys_addr_t translate_linear_address(struct mm_struct *mm, uintptr_t va)
 	return page_addr + page_offset;
 }
 
-#if !defined(ARCH_HAS_VALID_PHYS_ADDR_RANGE) || defined(MODULE)
+#if defined(MODULE) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
+/*
+ * The 5.10 GKI KMI does not export high_memory or ioremap_cache to modules.
+ * Operations are already split at page boundaries by the caller. Require one
+ * valid RAM page, then use the exported cached-RAM memremap interface.
+ */
+#define MEMK_USE_GKI_510_MEMREMAP
+static inline int memk_valid_phys_addr_range(phys_addr_t addr, size_t size)
+{
+	return size && size <= PAGE_SIZE - offset_in_page(addr) &&
+		pfn_valid(__phys_to_pfn(addr));
+}
+#define IS_VALID_PHYS_ADDR_RANGE(x,y) memk_valid_phys_addr_range(x,y)
+#elif !defined(ARCH_HAS_VALID_PHYS_ADDR_RANGE) || defined(MODULE)
 static inline int memk_valid_phys_addr_range(phys_addr_t addr, size_t size)
 {
 	return addr + size <= __pa(high_memory);
@@ -83,6 +96,24 @@ static inline int memk_valid_phys_addr_range(phys_addr_t addr, size_t size)
 #else
 #define IS_VALID_PHYS_ADDR_RANGE(x,y) valid_phys_addr_range(x,y)
 #endif
+
+static void *memk_map_ram(phys_addr_t pa, size_t size)
+{
+#ifdef MEMK_USE_GKI_510_MEMREMAP
+	return memremap(pa, size, MEMREMAP_WB);
+#else
+	return ioremap_cache(pa, size);
+#endif
+}
+
+static void memk_unmap_ram(void *mapped)
+{
+#ifdef MEMK_USE_GKI_510_MEMREMAP
+	memunmap(mapped);
+#else
+	iounmap(mapped);
+#endif
+}
 
 static size_t read_physical_address(phys_addr_t pa, void *buffer, size_t size)
 {
@@ -94,15 +125,15 @@ static size_t read_physical_address(phys_addr_t pa, void *buffer, size_t size)
 	if (!IS_VALID_PHYS_ADDR_RANGE(pa, size)) {
 		return 0;
 	}
-	mapped = ioremap_cache(pa, size);
+	mapped = memk_map_ram(pa, size);
 	if (!mapped) {
 		return 0;
 	}
 	if (copy_to_user(buffer, mapped, size)) {
-		iounmap(mapped);
+		memk_unmap_ram(mapped);
 		return 0;
 	}
-	iounmap(mapped);
+	memk_unmap_ram(mapped);
 	return size;
 }
 
@@ -116,15 +147,15 @@ static size_t write_physical_address(phys_addr_t pa, void *buffer, size_t size)
 	if (!IS_VALID_PHYS_ADDR_RANGE(pa, size)) {
 		return 0;
 	}
-	mapped = ioremap_cache(pa, size);
+	mapped = memk_map_ram(pa, size);
 	if (!mapped) {
 		return 0;
 	}
 	if (copy_from_user(mapped, buffer, size)) {
-		iounmap(mapped);
+		memk_unmap_ram(mapped);
 		return 0;
 	}
-	iounmap(mapped);
+	memk_unmap_ram(mapped);
 	return size;
 }
 
