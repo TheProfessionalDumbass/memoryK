@@ -212,7 +212,7 @@ jobs:
               EXT_MODULES=memkernel LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
               module="$(find out -type f -name miprotect.ko -print -quit)"
             else
-              tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //memkernel:miprotect
+              tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=release --lto=thin //memkernel:miprotect
               module="$(find -L bazel-bin/memkernel -type f -name miprotect.ko -print -quit)"
             fi
             test -n "$module"
