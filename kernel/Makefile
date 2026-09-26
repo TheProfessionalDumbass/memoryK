@@ -1,15 +1,21 @@
 ifneq ($(KERNELRELEASE),)
-# kbuild part of makefile
-	obj-$(CONFIG_MEMKERNEL)  := miprotect.o
-	miprotect-y := memory.o process.o entry.o input_hook.o
+ifneq ($(KBUILD_EXTMOD),)
+obj-m := miprotect.o
 else
-# normal makefile
-default:
-	# Assume kernel source is at KDIR or fail
-	ifeq ($(KDIR),)
-		$(error KDIR is not set. Please define KDIR to point to the kernel source directory.)
-	endif
-	make -C $(KDIR) M=$(PWD) modules
-clean:
-	rm -f *.ko *.o *.mod.o *.mod.c *.symvers .*.cmd
+obj-$(CONFIG_MEMKERNEL) := miprotect.o
 endif
+miprotect-y := memory.o process.o entry.o input_hook.o
+else
+KERNEL_SRC ?= $(KDIR)
+MODULE_DIR := $(abspath $(if $(M),$(M),$(CURDIR)))
+
+.PHONY: all modules clean
+all modules:
+	@test -n "$(KERNEL_SRC)" || { echo "KERNEL_SRC or KDIR is required" >&2; exit 1; }
+	$(MAKE) -C "$(KERNEL_SRC)" M="$(MODULE_DIR)" modules
+
+clean:
+	@test -n "$(KERNEL_SRC)" || { echo "KERNEL_SRC or KDIR is required" >&2; exit 1; }
+	$(MAKE) -C "$(KERNEL_SRC)" M="$(MODULE_DIR)" clean
+endif
+
