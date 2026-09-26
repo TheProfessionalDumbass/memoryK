@@ -9,10 +9,10 @@ else
 KERNEL_SRC ?= $(KDIR)
 MODULE_DIR := $(abspath $(if $(M),$(M),$(CURDIR)))
 
-.PHONY: all modules clean
-all modules:
+.PHONY: all modules modules_install clean
+all modules modules_install:
 	@test -n "$(KERNEL_SRC)" || { echo "KERNEL_SRC or KDIR is required" >&2; exit 1; }
-	$(MAKE) -C "$(KERNEL_SRC)" M="$(MODULE_DIR)" modules
+	$(MAKE) -C "$(KERNEL_SRC)" M="$(MODULE_DIR)" $(if $(filter all,$@),modules,$@)
 
 clean:
 	@test -n "$(KERNEL_SRC)" || { echo "KERNEL_SRC or KDIR is required" >&2; exit 1; }
